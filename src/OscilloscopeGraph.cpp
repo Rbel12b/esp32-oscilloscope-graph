@@ -18,10 +18,9 @@ extern "C"
 // #include <cstdint>
 // #include <cstring>
 
-uint16_t *OscilloscopeGraph::dac_buffer = nullptr;
-
-static void stream_task_trampoline(void *arg) {
-    OscilloscopeGraph* self = static_cast<OscilloscopeGraph*>(arg);
+static void stream_task_trampoline(void *arg)
+{
+    OscilloscopeGraph *self = static_cast<OscilloscopeGraph *>(arg);
     self->stream_task();
 }
 
@@ -30,6 +29,11 @@ void OscilloscopeGraph::init()
     dac_buffer = (uint16_t *)heap_caps_malloc(
         BUFFER_SAMPLES * sizeof(uint16_t),
         MALLOC_CAP_DMA);
+
+    if (!dac_buffer)
+    {
+        log_e("Failed to allocate buffer");
+    }
 
     fill_waveform();
     init_i2s();
@@ -47,8 +51,8 @@ void OscilloscopeGraph::init_i2s()
         .channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT,
         .communication_format = I2S_COMM_FORMAT_STAND_I2S,
         .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
-        .dma_buf_count = DMA_BUF_COUNT,
-        .dma_buf_len = BUFFER_SAMPLES,
+        .dma_desc_num = DMA_BUF_COUNT,
+        .dma_frame_num = DMA_BUF_LEN,
         .use_apll = false};
 
     ESP_ERROR_CHECK(i2s_driver_install(I2S_NUM_0, &config, 0, nullptr));
@@ -61,11 +65,12 @@ void OscilloscopeGraph::fill_waveform()
     {
         float phase = float(i) / BUFFER_SAMPLES;
 
-        uint8_t left = uint8_t(127 + 100 * sinf(2 * M_PI * phase));  // DAC2
-        uint8_t right = uint8_t(127 + 100 * cosf(2 * M_PI * phase)); // DAC1
+        uint8_t left = uint8_t(127 + 127 * sinf(2 * M_PI * phase));  // DAC2
+        uint8_t right = uint8_t(127 + 127 * cosf(2 * M_PI * phase)); // DAC1
 
         dac_buffer[i] = (uint16_t(left) << 8) | uint16_t(right);
     }
+    log_i("Initialized sine wave");
 }
 
 void OscilloscopeGraph::stream_task()
@@ -79,15 +84,18 @@ void OscilloscopeGraph::stream_task()
 
     while (true)
     {
-        esp_err_t ret = i2s_write(I2S_NUM_0, dac_buffer,
-                  BUFFER_SAMPLES * sizeof(uint16_t),
-                  &written, portMAX_DELAY);
+        for (int offset = 0; offset < BUFFER_SAMPLES; offset += DMA_BUF_LEN)
+        {
+            size_t written;
+            esp_err_t ret = i2s_write(I2S_NUM_0, &dac_buffer[offset],
+                      min(DMA_BUF_LEN, BUFFER_SAMPLES - offset) * sizeof(uint16_t),
+                      &written, portMAX_DELAY);
 
-        // safety check (optional)
-        if (ret != ESP_OK) {
-            log_e("Failed to write to i2s buffer.");
+            if (ret != ESP_OK)
+            {
+                log_e("Failed to writo to I2S DMA buffer");
+            }
         }
-
         // feed watchdog
         esp_task_wdt_reset();
     }
